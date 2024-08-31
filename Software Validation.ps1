@@ -22,7 +22,7 @@ $Creds = Get-Credential
 foreach ($ws in $workstations){
     $session = Enter-PSSession -ComputerName $ws -Credential $Creds
     Invoke-Command -Session $session -ScriptBlock {
-
+        Write-Host $env:COMPUTERNAME
         Test-path "HKLM:SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Google Chrome" -Verbose 
     }
 }
