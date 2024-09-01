@@ -23,6 +23,26 @@ foreach ($ws in $workstations){
     $session = Enter-PSSession -ComputerName $ws -Credential $Creds
     Invoke-Command -Session $session -ScriptBlock {
         Write-Host $env:COMPUTERNAME
-        Test-path "HKLM:SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Google Chrome" -Verbose 
+        $Chrome = "Test-path HKLM:SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Google Chrome" -Verbose
+        $installer = C:\Users\Public\Desktop\Chromeinstaller.exe
+
+        #Software Action -> Install
+        if ($Chrome -eq "false"){
+            Start-Process -FilePath $installer -ArgumentList "/s" -Wait -ErrorAction "Silently Continue" -Verbose
+
+        }
+
+        #Software Action -> Uninstall
+        if ($Chrome -eq "true"){
+            Uninstall-Package -name "Google Chrome"
+        }
+
+        #Software Action -> Uninstall 
+        if ($Chrome -eq "true"){
+            Get-ItemProperty -Path "HKLM:SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Google Chrome" | Select Uninstallstring
+        }
+        
+    
     }
+
 }
