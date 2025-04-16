@@ -1,4 +1,4 @@
-# Event Viewer Custom View Creator for JSIG AU-2 Compliance
+# Event Viewer Custom View Creator for JSIG AU-2 Compliance 
 # This script creates persistent custom views in Windows Event Viewer using native functionality
 
 # Set execution policy to bypass for current user
