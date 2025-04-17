@@ -1,235 +1,153 @@
-# Event Viewer Custom View Creator for JSIG AU-2 Compliance 
-# This script creates persistent custom views in Windows Event Viewer using native functionality
+# Event Viewer Custom View Creator
+# This script creates custom view XML files that can be imported into Event Viewer
 
-# Set execution policy to bypass for current user
-Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope CurrentUser -Force
-
-#Requires -RunAsAdministrator
-
-# Define paths and variables
-$CustomViewsPath = "$env:USERPROFILE\Documents\Event Viewer Views"
-$ConsolidatedViewName = "JSIG AU-2 Consolidated View"
-
-# Function to test if Security log is enabled
-function Test-SecurityLogEnabled {
-    try {
-        $securityLog = Get-WinEvent -ListLog Security -ErrorAction Stop
-        
-        if ($securityLog.IsEnabled) {
-            Write-Host "Security log is enabled and accessible." -ForegroundColor Green
-            return $true
-        }
-        else {
-            Write-Host "Security log is not enabled. Please enable it to proceed." -ForegroundColor Red
-            return $false
-        }
-    }
-    catch {
-        Write-Host "Error accessing Security log: $_" -ForegroundColor Red
-        Write-Host "Please ensure you have proper permissions and the Security log is enabled." -ForegroundColor Red
-        return $false
-    }
+# Function to check if required event logs are enabled
+function Test-EventLogsEnabled {
+  $requiredLogs = @(
+      "Security",
+      "System",
+      "Application"
+  )
+  
+  $missingLogs = @()
+  foreach ($log in $requiredLogs) {
+      try {
+          $logStatus = Get-WinEvent -ListLog $log -ErrorAction Stop
+          if (-not $logStatus.IsEnabled) {
+              $missingLogs += $log
+          }
+      }
+      catch {
+          $missingLogs += $log
+      }
+  }
+  
+  if ($missingLogs.Count -gt 0) {
+      Write-Host "Warning: The following required event logs are not enabled:" -ForegroundColor Yellow
+      $missingLogs | ForEach-Object { Write-Host "- $_" -ForegroundColor Yellow }
+      Write-Host "Please enable these logs before creating custom views." -ForegroundColor Yellow
+      return $false
+  }
+  return $true
 }
 
-# Test Security log status before proceeding
-if (-not (Test-SecurityLogEnabled)) {
-    Write-Host "`nScript cannot proceed without an enabled Security log." -ForegroundColor Red
-    Write-Host "Please enable the Security log and try again." -ForegroundColor Red
-    exit 1
-}
+# Define the path for saving custom views
+$CustomViewsPath = "$env:USERPROFILE\Documents\EventViewerCustomViews"
 
-# Function to create and import a custom view
-function New-CustomEventView {
-    param (
-        [string]$ViewName,
-        [string]$Query,
-        [string]$Description
-    )
-    
-    try {
-        $ViewPath = Join-Path $CustomViewsPath "$ViewName.xml"
-        $CustomView = @"
+# Function to create a custom view XML file
+function New-EventViewerCustomView {
+  param (
+      [string]$ViewName,
+      [string]$LogName,
+      [string]$FilterXPath,
+      [string]$Description
+  )
+  
+  try {
+      # Create the custom views directory if it doesn't exist
+      if (-not (Test-Path $CustomViewsPath)) {
+          New-Item -ItemType Directory -Path $CustomViewsPath -Force | Out-Null
+      }
+      
+      # Create the XML file for the view
+      $viewPath = Join-Path $CustomViewsPath "$ViewName.xml"
+      
+      # Extract Event IDs from the XPath query for the Simple section
+      $eventIds = @()
+      if ($FilterXPath -match "EventID=(\d+)") {
+          $matches | ForEach-Object {
+              if ($_ -match "EventID=(\d+)") {
+                  $eventIds += $matches[1]
+              }
+          }
+      }
+      $eventIdString = $eventIds -join ","
+
+      # Create the custom view XML with proper formatting
+      $xmlContent = @"
 <?xml version="1.0" encoding="utf-8"?>
 <ViewerConfig>
     <QueryConfig>
         <QueryParams>
-            <UserQuery>
-                <![CDATA[$Query]]>
-            </UserQuery>
-            <Name>$ViewName</Name>
-            <Description>$Description</Description>
+            <Simple>
+                <Channel>$LogName</Channel>
+                <EventId>$eventIdString</EventId>
+                <Level>1,2,3,4,0,5</Level>
+                <RelativeTimeInfo>0</RelativeTimeInfo>
+                <BySource>False</BySource>
+            </Simple>
         </QueryParams>
+        <QueryNode>
+            <Name>$ViewName</Name>
+            <QueryList>
+                <Query Id="0" Path="$LogName">
+                    <Select Path="$LogName">*[System[(Level=1 or Level=2 or Level=3 or Level=4 or Level=0 or Level=5) and ($($FilterXPath -replace '^\*\[System\[\(', '' -replace '\)\]\]$', ''))]]</Select>
+                </Query>
+            </QueryList>
+        </QueryNode>
     </QueryConfig>
 </ViewerConfig>
 "@
-        $CustomView | Out-File -FilePath $ViewPath -Encoding UTF8
-        
-        # Create a temporary XML file for wevtutil
-        $TempQueryFile = Join-Path $env:TEMP "$ViewName-query.xml"
-        $Query | Out-File -FilePath $TempQueryFile -Encoding UTF8
-        
-        # Import the view using wevtutil with proper escaping for spaces
-        $escapedViewName = $ViewName -replace ' ', '` '
-        wevtutil sl "`"$ViewName`"" /q:"`"$TempQueryFile`"" /l:en-US
-        
-        # Clean up temporary file
-        Remove-Item -Path $TempQueryFile -Force
-        
-        Write-Host "Created and imported custom view: $ViewName" -ForegroundColor Green
-    }
-    catch {
-        Write-Host "Error creating/importing view $ViewName : $_" -ForegroundColor Red
-    }
+      
+      # Save the XML file
+      $xmlContent | Out-File -FilePath $viewPath -Encoding UTF8
+      
+      Write-Host "Created custom view XML: $ViewName" -ForegroundColor Green
+      Write-Host "View saved to: $viewPath" -ForegroundColor Cyan
+      return $true
+  }
+  catch {
+      Write-Host "Error creating view $ViewName : $_" -ForegroundColor Red
+      return $false
+  }
 }
 
-# Create custom views directory if it doesn't exist
-if (-not (Test-Path $CustomViewsPath)) {
-    New-Item -ItemType Directory -Path $CustomViewsPath -Force | Out-Null
+# Check if required event logs are enabled
+if (-not (Test-EventLogsEnabled)) {
+  Write-Host "Please enable the required event logs and run the script again." -ForegroundColor Red
+  exit
 }
 
-# Validate required event logs
-$requiredLogs = @("Security", "System", "Application")
-$logsEnabled = $true
+# Hard-coded event data with updated event IDs
+$eventData = @(
+    @{ Category = "Auth"; EventIDs = @(4624, 4625, 4634, 4647, 4648, 4768, 4769, 4771, 4776, 4778, 4779) },
+    @{ Category = "FileObject"; EventIDs = @(4656, 4663, 4659, 4660, 4670, 4657, 5140, 5145) },
+    @{ Category = "Export"; EventIDs = @(4656, 4663) },
+    @{ Category = "Import"; EventIDs = @(4656, 4663) },
+    @{ Category = "UserGroup"; EventIDs = @(4720, 4722, 4723, 4724, 4725, 4726, 4738, 4740, 4731, 4732, 4733, 4735, 4737, 4727, 4728, 4729, 4730, 4780, 4781) },
+    @{ Category = "Privileged"; EventIDs = @(4672, 4673, 4719, 4907, 4704, 4705, 4902, 4904) },
+    @{ Category = "AdminAccess"; EventIDs = @(4672) },
+    @{ Category = "PrivilegeEscalation"; EventIDs = @(4672, 4673) },
+    @{ Category = "AuditLog"; EventIDs = @(1100, 1102, 1101) },
+    @{ Category = "SystemReboot"; EventIDs = @(6005, 6006, 6008, 1074, 1076, 6009) },
+    @{ Category = "PrintDevice"; EventIDs = @(307, 805) },
+    @{ Category = "PrintFile"; EventIDs = @(307, 805) },
+    @{ Category = "AppInit"; EventIDs = @(4688, 4697) }
+)
 
-foreach ($log in $requiredLogs) {
-    if (-not (Test-EventLogAvailability -LogName $log)) {
-        $logsEnabled = $false
-        Write-Host "Required event log '$log' is not enabled. Some views may not work correctly." -ForegroundColor Yellow
-    }
+# Create custom views for each category
+foreach ($group in $eventData) {
+    $categoryName = $group.Category
+    $eventIdString = $group.EventIDs -join " or EventID="
+    
+    # Define the XPath query
+    $filterXPath = "*[System[(EventID=$eventIdString)]]"
+    
+    # Create the custom view XML file
+    New-EventViewerCustomView -ViewName $categoryName -LogName "Security" -FilterXPath $filterXPath -Description "Events for $categoryName"
 }
-
-# Define event queries for each category using native XML query syntax
-$AuthenticationEvents = @"
-<QueryList>
-  <Query Id="0">
-    <Select Path="Security">*[System[(EventID=4624 or EventID=4625 or EventID=4634 or EventID=4647 or EventID=4648)]]</Select>
-  </Query>
-</QueryList>
-"@
-
-$FileAccessEvents = @"
-<QueryList>
-  <Query Id="0">
-    <Select Path="Security">*[System[(EventID=4656 or EventID=4658 or EventID=4663 or EventID=4660)]]</Select>
-  </Query>
-</QueryList>
-"@
-
-$RemovableDeviceEvents = @"
-<QueryList>
-  <Query Id="0">
-    <Select Path="Security">*[System[(EventID=4663)]] and *[EventData[Data[@Name='ObjectType']='File']]</Select>
-  </Query>
-</QueryList>
-"@
-
-$UserGroupManagementEvents = @"
-<QueryList>
-  <Query Id="0">
-    <Select Path="Security">*[System[(EventID=4720 or EventID=4722 or EventID=4724 or EventID=4725 or EventID=4726 or EventID=4732 or EventID=4733)]]</Select>
-  </Query>
-</QueryList>
-"@
-
-$PrivilegedOperationsEvents = @"
-<QueryList>
-  <Query Id="0">
-    <Select Path="Security">*[System[(EventID=4672 or EventID=4673 or EventID=4674 or EventID=4688)]]</Select>
-  </Query>
-</QueryList>
-"@
-
-$AuditLogEvents = @"
-<QueryList>
-  <Query Id="0">
-    <Select Path="Security">*[System[(EventID=1102 or EventID=4719 or EventID=4902 or EventID=4904 or EventID=4905 or EventID=4906 or EventID=4907 or EventID=4908)]]</Select>
-  </Query>
-</QueryList>
-"@
-
-$SystemEvents = @"
-<QueryList>
-  <Query Id="0">
-    <Select Path="Security">*[System[(EventID=4608 or EventID=4609 or EventID=4610 or EventID=4611 or EventID=4612 or EventID=4614 or EventID=4615 or EventID=4616 or EventID=4618 or EventID=4621)]]</Select>
-  </Query>
-</QueryList>
-"@
-
-$ApplicationEvents = @"
-<QueryList>
-  <Query Id="0">
-    <Select Path="Security">*[System[(EventID=4688 or EventID=4689 or EventID=4697 or EventID=4698 or EventID=4699 or EventID=4700 or EventID=4701 or EventID=4702)]]</Select>
-  </Query>
-</QueryList>
-"@
-
-$PrintEvents = @"
-<QueryList>
-  <Query Id="0">
-    <Select Path="Security">*[System[(EventID=307)]]</Select>
-  </Query>
-</QueryList>
-"@
-
-# Consolidated view query
-$ConsolidatedQuery = @"
-<QueryList>
-  <Query Id="0">
-    <Select Path="Security">*[System[(EventID=4624 or EventID=4625 or EventID=4634 or EventID=4647 or EventID=4648 or EventID=4656 or EventID=4658 or EventID=4663 or EventID=4660 or EventID=4720 or EventID=4722 or EventID=4724 or EventID=4725 or EventID=4726 or EventID=4732 or EventID=4733 or EventID=4672 or EventID=4673 or EventID=4674 or EventID=4688 or EventID=1102 or EventID=4719 or EventID=4902 or EventID=4904 or EventID=4905 or EventID=4906 or EventID=4907 or EventID=4908 or EventID=307 or EventID=4608 or EventID=4609 or EventID=4610 or EventID=4611 or EventID=4612 or EventID=4614 or EventID=4615 or EventID=4616 or EventID=4618 or EventID=4621 or EventID=4688 or EventID=4689 or EventID=4697 or EventID=4698 or EventID=4699 or EventID=4700 or EventID=4701 or EventID=4702)]]</Select>
-  </Query>
-</QueryList>
-"@
-
-# Create individual custom views
-New-CustomEventView -ViewName "Authentication Events" -Query $AuthenticationEvents -Description "Logon success/failure, logoffs, and authentication events"
-New-CustomEventView -ViewName "File Access Events" -Query $FileAccessEvents -Description "File and object access activities"
-New-CustomEventView -ViewName "Removable Device Events" -Query $RemovableDeviceEvents -Description "USB and removable device usage"
-New-CustomEventView -ViewName "User Group Management" -Query $UserGroupManagementEvents -Description "User and group management changes"
-New-CustomEventView -ViewName "Privileged Operations" -Query $PrivilegedOperationsEvents -Description "Privileged operations and escalations"
-New-CustomEventView -ViewName "Audit Log Events" -Query $AuditLogEvents -Description "Audit log access and modifications"
-New-CustomEventView -ViewName "System Events" -Query $SystemEvents -Description "System startup/shutdown events"
-New-CustomEventView -ViewName "Application Events" -Query $ApplicationEvents -Description "Application execution and errors"
-New-CustomEventView -ViewName "Print Events" -Query $PrintEvents -Description "Print activity monitoring"
-
-# Create consolidated view
-New-CustomEventView -ViewName $ConsolidatedViewName -Query $ConsolidatedQuery -Description "Comprehensive view of all JSIG AU-2 relevant events"
-
-# Function to configure audit policies
-function Set-AuditPolicies {
-    if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        Write-Host "Not running as administrator. Skipping audit policy configuration." -ForegroundColor Yellow
-        return
-    }
-
-    try {
-        # Configure audit policies
-        auditpol /set /category:"Account Logon" /success:enable /failure:enable
-        auditpol /set /category:"Logon/Logoff" /success:enable /failure:enable
-        auditpol /set /category:"Object Access" /success:enable /failure:enable
-        auditpol /set /category:"Privilege Use" /success:enable /failure:enable
-        auditpol /set /category:"Detailed Tracking" /success:enable /failure:enable
-        auditpol /set /category:"Policy Change" /success:enable /failure:enable
-        auditpol /set /category:"Account Management" /success:enable /failure:enable
-        auditpol /set /category:"DS Access" /success:enable /failure:enable
-        auditpol /set /category:"System" /success:enable /failure:enable
-        
-        Write-Host "Audit policies configured successfully." -ForegroundColor Green
-    }
-    catch {
-        Write-Host "Error configuring audit policies: $_" -ForegroundColor Red
-    }
-}
-
-# Configure audit policies
-Set-AuditPolicies
 
 # Display summary
-Write-Host "`nCustom views have been created and imported into Event Viewer" -ForegroundColor Cyan
-Write-Host "To access these views in Event Viewer:" -ForegroundColor Cyan
+Write-Host "`nCustom View Creation Summary:" -ForegroundColor Cyan
+Write-Host "Successfully created custom view XML files for each hard-coded category." -ForegroundColor Cyan
+Write-Host "`nThe custom view XML files have been saved to:" -ForegroundColor Cyan
+Write-Host "$CustomViewsPath" -ForegroundColor Cyan
+Write-Host "`nTo import these views in Event Viewer:" -ForegroundColor Cyan
 Write-Host "1. Open Event Viewer" -ForegroundColor Cyan
-Write-Host "2. Navigate to 'Custom Views' in the left pane" -ForegroundColor Cyan
-Write-Host "3. The views will be automatically available" -ForegroundColor Cyan
+Write-Host "2. Right-click 'Custom Views' in the left pane" -ForegroundColor Cyan
+Write-Host "3. Select 'Import Custom View...'" -ForegroundColor Cyan
+Write-Host "4. Navigate to: $CustomViewsPath" -ForegroundColor Cyan
+Write-Host "5. Select the desired .xml file(s)" -ForegroundColor Cyan
+Write-Host "`nNote: Each view can be customized further in Event Viewer by right-clicking the view and selecting 'Properties'" -ForegroundColor Yellow
 
-if (-not $logsEnabled) {
-    Write-Host "`nWarning: Some required event logs are not enabled. Please enable them for complete functionality." -ForegroundColor Red
-}
+
